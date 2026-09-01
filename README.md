@@ -12,19 +12,33 @@
 
 ## ⚡ เริ่มใช้ใน 3 ขั้นตอน
 
-### 1. ติดตั้ง Flask (ทำครั้งเดียว)
+### 1. โหลดโค้ดและติดตั้ง Flask (ทำครั้งเดียว)
+
+```bash
+git clone https://github.com/realnonn-stack/World-Watch-III.git
+```
+
+หรือกดปุ่มเขียว **Code → Download ZIP** บนหน้า GitHub แล้วแตกไฟล์เอาก็ได้ จากนั้นติดตั้ง Flask
 
 ```bash
 py -m pip install flask
 ```
 
+> ใช้ `py` บน Windows · ถ้าเป็น Mac หรือ Linux ให้ใช้ `python3` แทนทุกคำสั่งในคู่มือนี้
+
 ### 2. สั่งรัน
 
+เข้าไปที่โฟลเดอร์ที่วางไฟล์ไว้ แล้วสั่งรัน
+
 ```bash
-py D:\Realcado\website\app.py
+cd path\to\World-Watch-III
 ```
 
-รันจากที่ไหนก็ได้ ไม่ต้อง `cd` เข้าโฟลเดอร์ก่อน
+```bash
+py app.py
+```
+
+หรือถ้าไม่อยาก `cd` จะใส่ path เต็มของไฟล์ไปเลยก็ได้ เช่น `py C:\myfolder\app.py`
 
 ### 3. เปิดเบราว์เซอร์
 
@@ -229,7 +243,7 @@ py -m pip install waitress
 คำสั่งนี้ต้อง `cd` เข้าโฟลเดอร์ก่อน เพราะ waitress ต้อง import `app.py` จากที่ที่ยืนอยู่
 
 ```bash
-cd D:\Realcado\website
+cd path\to\World-Watch-III
 ```
 
 ```bash
