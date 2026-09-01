@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ความลับ — ห้ามขึ้น git เด็ดขาด
+.env
+.env.*
+*service-account*.json
+*credentials*.json
+*.key
+*.pem
+
+# ล็อกและไฟล์ชั่วคราว
+*.log
+server.log
+*.tmp
+
+# เครื่องมือ / ระบบปฏิบัติการ
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
