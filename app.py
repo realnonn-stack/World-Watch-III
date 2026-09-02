@@ -189,6 +189,18 @@ DEESCALATION_KEYWORDS = [
     "resume talks", "diplomatic breakthrough",
 ]
 
+# คำที่บอกว่า "ข่าวนี้ไม่ใช่เหตุการณ์ที่เพิ่งเกิด" — พบแล้วตัดคะแนนความรุนแรงทิ้งทั้งหมด
+# เพราะข่าวรำลึก ข่าวรณรงค์ปลดอาวุธ หรือสารคดี มักมีคำแรง ๆ อยู่เต็มไปหมด
+# ตัวอย่างจริงที่เคยทำให้คะแนนเพี้ยน:
+#   "'Every step towards disarmament matters,' nuclear testing survivor..." (UN News)
+#   ข่าวรณรงค์สันติภาพแท้ ๆ แต่เคยได้คะแนนสูงสุดเพราะเจอคำว่า nuclear test
+CONTEXT_CANCEL_WORDS = [
+    "disarmament", "survivor", "anniversary", "memorial", "commemorat", "remembrance",
+    "peace prize", "museum", "documentary", "obituary", "in memory", "years ago",
+    "decades ago", "years after", "veterans", "historian", "retrospective",
+    "hiroshima", "nagasaki", "book review", "film festival",
+]
+
 # คำกำกวมที่แปลว่า "ยังไม่ยืนยัน" — เจอแล้วต้องติดป้ายเตือน
 HEDGE_WORDS = [
     "reportedly", "allegedly", "alleged", "claims", "claimed", "rumor", "rumour",
@@ -634,6 +646,13 @@ def score_item(item: dict) -> dict:
     if calming:
         weight = max(0, weight - 5)
 
+    # ข่าวรำลึก/รณรงค์/ย้อนอดีต — ตัดคะแนนทิ้งทั้งหมด ไม่ใช่แค่หักบางส่วน
+    # ดูเฉพาะ "พาดหัว" ไม่ดูเนื้อข่าว เพราะคำอย่าง survivor หรือ anniversary
+    # โผล่ในเนื้อข่าวสงครามจริงได้ตลอด ถ้าไปจับตรงนั้นจะตัดคะแนนข่าวจริงผิด ๆ
+    cancelled = [k for k in CONTEXT_CANCEL_WORDS if k in item["title"].lower()]
+    if cancelled:
+        weight = 0
+
     best_key, best_hits = "global", 0
     for th in THEATRES:
         hits = sum(1 for k in th["kw"] if k in blob)
@@ -644,9 +663,61 @@ def score_item(item: dict) -> dict:
 
     item.update({
         "weight": weight, "matched": matched[:5], "calming": calming[:3],
-        "theatre": best_key, "hedges": hedges[:3], "hedged": bool(hedges),
+        "cancelled": cancelled[:3], "theatre": best_key,
+        "hedges": hedges[:3], "hedged": bool(hedges),
     })
     return item
+
+
+# คำทั่วไปที่ไม่ช่วยแยกว่าข่าวสองชิ้นพูดถึงเรื่องเดียวกันหรือเปล่า
+STOPWORDS = {
+    "about", "after", "against", "amid", "among", "around", "because", "been", "before",
+    "being", "between", "could", "during", "from", "have", "into", "more", "most", "over",
+    "said", "says", "should", "some", "such", "than", "that", "their", "them", "then",
+    "there", "these", "they", "this", "those", "through", "under", "until", "were", "what",
+    "when", "where", "which", "while", "will", "with", "would", "your", "also", "news",
+    "report", "reports", "update", "latest", "live", "first", "still", "back", "here",
+}
+
+
+def _title_tokens(text: str) -> set[str]:
+    """คำที่มีความหมายในพาดหัว ใช้เทียบว่าข่าวสองชิ้นพูดถึงเรื่องเดียวกันไหม"""
+    return {w for w in re.findall(r"[a-zA-Z]{4,}", text.lower()) if w not in STOPWORDS}
+
+
+def cluster_events(items: list[dict]) -> list[dict]:
+    """
+    รวมข่าวที่พูดถึง "เหตุการณ์เดียวกัน" ให้เหลือรายการเดียว
+
+    ทำไมต้องทำ: 5 สำนักข่าวรายงานเหตุเดียวกัน ไม่ได้แปลว่าเกิดเหตุ 5 ครั้ง
+    ถ้านับแยกกัน คะแนนจะพองตามจำนวนแหล่งข่าวที่เราสมัครไว้ ซึ่งไม่ใช่ความจริงของโลก
+
+    เกณฑ์รวม: อยู่โซนเดียวกัน และคำสำคัญในพาดหัวซ้อนกันมากพอ
+    (ซ้อนกันตั้งแต่ 4 คำขึ้นไป หรือซ้อนกันเกิน 30% ของคำทั้งหมด)
+    """
+    events: list[dict] = []
+    for it in sorted(items, key=lambda x: (-x["weight"], -x["sort_key"])):
+        tokens = _title_tokens(it["title"])
+        for ev in events:
+            if ev["theatre"] != it["theatre"]:
+                continue
+            shared = len(tokens & ev["tokens"])
+            union = len(tokens | ev["tokens"]) or 1
+            if shared >= 4 or shared / union >= 0.30:
+                ev["items"].append(it)
+                ev["sources"].add(it["source"])
+                break
+        else:
+            # ข่าวชิ้นแรกของกลุ่มคือชิ้นที่น้ำหนักสูงสุด (เพราะเรียงมาแล้ว) ใช้เป็นตัวแทนเหตุการณ์
+            events.append({"theatre": it["theatre"], "tokens": tokens, "items": [it],
+                           "sources": {it["source"]}, "weight": it["weight"], "best": it})
+
+    for ev in events:
+        ev["corroboration"] = len(ev["sources"])
+        # หลายสำนักที่เป็นอิสระต่อกันรายงานตรงกัน = น่าเชื่อถือขึ้น บวกให้นิดเดียวและมีเพดาน
+        ev["eff"] = min(14, ev["weight"] + (1 if ev["corroboration"] >= 3 else 0))
+    events.sort(key=lambda e: (-e["eff"], -e["best"]["sort_key"]))
+    return events
 
 
 def fetch_feed(feed: dict) -> dict:
@@ -678,15 +749,14 @@ def fetch_feed(feed: dict) -> dict:
 # 6. ดัชนีความตึงเครียด (คำนวณเองทั้งหมด — เปิดสูตรให้ตรวจได้)
 # =============================================================================
 
-def build_tension(news: list[dict], assets_by_key: dict) -> dict:
-    now = datetime.now(timezone.utc)
-
+def build_tension(recent_events: list[dict], assets_by_key: dict) -> dict:
     # ---- องค์ประกอบที่ 1: ข่าวยกระดับความรุนแรงจากแหล่งที่เชื่อถือได้ (เต็ม 40) ----
-    recent = [n for n in news
-              if n["tier"] in ("A", "B") and n["weight"] >= 5
-              and n["published"] and (now - n["published"]) <= timedelta(hours=48)]
-    news_raw = sum(n["weight"] for n in recent)
-    news_score = min(40.0, news_raw * 0.7)
+    # คิดจาก "เหตุการณ์" ไม่ใช่ "จำนวนข่าว" และดูที่ความรุนแรง + การกระจายตัว ไม่ใช่ผลรวม
+    # เพราะถ้าบวกกันตรง ๆ คะแนนจะพองตามจำนวนแหล่งข่าวที่เราสมัครไว้ ไม่ใช่ตามความจริงของโลก
+    severity = max((e["eff"] for e in recent_events), default=0)
+    hot_theatres = sorted({e["theatre"] for e in recent_events if e["eff"] >= 7})
+    breadth = len(hot_theatres)
+    news_score = min(40.0, severity * 2.0 + breadth * 3.0)
 
     # ---- องค์ประกอบที่ 2: จำนวนสินทรัพย์ที่เคลื่อนไหวผิดปกติ (เต็ม 35) ----
     odd_assets = []
@@ -745,11 +815,14 @@ def build_tension(news: list[dict], assets_by_key: dict) -> dict:
         "score": total, "label": label, "color": color, "advice": advice,
         "components": [
             {"name": "ข่าวยกระดับความรุนแรง (48 ชม.)", "score": round(news_score, 1), "max": 40,
-             "formula": "ผลรวมน้ำหนักคำสำคัญของข่าวจากแหล่งระดับ A/B × 0.7 (เพดาน 40)",
-             "detail": (f"พบ {len(recent)} ข่าวเข้าเกณฑ์ น้ำหนักรวมดิบ {news_raw}"
-                        if recent else "ไม่พบข่าวยกระดับความรุนแรงจากแหล่งที่เชื่อถือได้ใน 48 ชม."),
-             "items": [f"{n['source']}: {n['title'][:90]}" for n in
-                       sorted(recent, key=lambda x: -x["weight"])[:4]]},
+             "formula": "ความรุนแรงของเหตุการณ์ที่แรงที่สุด × 2 + จำนวนโซนที่มีเหตุระดับ 7 ขึ้นไป × 3 (เพดาน 40)",
+             "detail": (f"รวมข่าวเรื่องเดียวกันแล้วเหลือ {len(recent_events)} เหตุการณ์ · "
+                        f"แรงสุด {severity} · เกิดพร้อมกัน {breadth} โซน"
+                        if recent_events
+                        else "ไม่พบเหตุการณ์ยกระดับความรุนแรงจากแหล่งที่เชื่อถือได้ใน 48 ชม."),
+             "items": [f"[{e['eff']}] {e['best']['title'][:78]}"
+                       f" — {e['corroboration']} สำนักรายงานตรงกัน"
+                       for e in recent_events[:4]]},
             {"name": "สินทรัพย์เคลื่อนไหวผิดปกติ", "score": round(market_score, 1), "max": 35,
              "formula": "ผลรวมของ (|z| − 1) × 4 เฉพาะตัวที่ |z| ≥ 1.5 (เพดาน 35)",
              "detail": (f"ผิดปกติ {len(odd_assets)} รายการ" if odd_assets
@@ -970,10 +1043,23 @@ def build_snapshot(property_thb: int = DEFAULT_PROPERTY_THB) -> dict:
                          "items": hot[:4]})
     theatres.sort(key=lambda t: (-t["top_weight"], -t["count"]))
 
-    # ข่าวที่ต้องจับตา = แหล่งเชื่อถือได้ + น้ำหนักสูง
-    watchlist = sorted(
-        [n for n in all_items if n["tier"] in ("A", "B") and n["weight"] >= 5 and not n["hedged"]],
-        key=lambda n: (-n["weight"], -n["sort_key"]))[:14]
+    # ข่าวที่ต้องจับตา — รวมข่าวเรื่องเดียวกันให้เหลือเหตุการณ์เดียวก่อน
+    # ไม่งั้นหน้าเว็บจะเต็มไปด้วยข่าวเดียวกันจากคนละสำนัก และคะแนนก็จะพองตามไปด้วย
+    now_utc = datetime.now(timezone.utc)
+    candidates = [n for n in all_items
+                  if n["tier"] in ("A", "B") and n["weight"] >= 5 and not n["hedged"]]
+    events = cluster_events(candidates)
+    recent_events = [e for e in events
+                     if e["best"]["published"]
+                     and (now_utc - e["best"]["published"]) <= timedelta(hours=48)]
+
+    watchlist = []
+    for ev in events[:14]:
+        row = dict(ev["best"])
+        row["corroboration"] = ev["corroboration"]
+        row["also"] = sorted(ev["sources"] - {ev["best"]["source"]})[:3]
+        row["weight"] = ev["eff"]
+        watchlist.append(row)
 
     # ข่าวน่าสนใจแต่ยังเชื่อไม่ได้ = แหล่งระดับ C/D หรือมีคำกำกวม
     unverified = []
@@ -991,7 +1077,7 @@ def build_snapshot(property_thb: int = DEFAULT_PROPERTY_THB) -> dict:
     unverified.sort(key=lambda n: (-n["weight"], -n["sort_key"]))
     unverified = unverified[:12]
 
-    tension = build_tension(all_items, assets_by_key)
+    tension = build_tension(recent_events, assets_by_key)
     thailand = build_thailand(raw_series, assets_by_key, property_thb)
 
     sources = []
@@ -1027,6 +1113,8 @@ def build_snapshot(property_thb: int = DEFAULT_PROPERTY_THB) -> dict:
         "tiers": TIERS,
         "stats": {
             "news_total": len(all_items),
+            "events_total": len(events),
+            "events_48h": len(recent_events),
             "feeds_ok": sum(1 for f in feed_results if f["ok"]),
             "feeds_total": len(feed_results),
             "assets_ok": sum(1 for a in assets if a.get("ok")),
@@ -1134,7 +1222,8 @@ tailwind.config = {
     <div class="mx-auto max-w-7xl px-4 py-1.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-slate-400">
       <span>📡 แหล่งข่าว <b class="text-slate-200">{{ data.stats.feeds_ok }}/{{ data.stats.feeds_total }}</b> ใช้งานได้</span>
       <span>📈 ราคาสินทรัพย์ <b class="text-slate-200">{{ data.stats.assets_ok }}/{{ data.stats.assets_total }}</b> ดึงสำเร็จ</span>
-      <span>📰 ข่าวที่ประมวลผล <b class="text-slate-200">{{ data.stats.news_total }}</b> ชิ้น</span>
+      <span>📰 ข่าว <b class="text-slate-200">{{ data.stats.news_total }}</b> ชิ้น
+        → รวมเรื่องเดียวกันเหลือ <b class="text-slate-200">{{ data.stats.events_total }}</b> เหตุการณ์</span>
       <span>⚠️ สินทรัพย์ผิดปกติ <b class="{% if data.stats.assets_odd %}text-rose-300{% else %}text-slate-200{% endif %}">{{ data.stats.assets_odd }}</b> รายการ</span>
       {% if static_mode %}
       <span class="ml-auto text-slate-500">หน้านี้สร้างไว้ล่วงหน้าเมื่อ {{ data.generated_th }} · GitHub สร้างใหม่ให้ทุก 30 นาที</span>
@@ -1290,6 +1379,12 @@ tailwind.config = {
               {{ n.source }} · {{ data.tiers[n.tier].label_th }}
             </span>
             <span class="text-slate-500">{{ n.ago }} · {{ n.published_th }}</span>
+            {% if n.corroboration and n.corroboration > 1 %}
+            <span class="rounded bg-emerald-500/15 px-1.5 py-px font-semibold text-emerald-300"
+                  title="สำนักอื่นที่รายงานเรื่องเดียวกัน: {{ n.also | join(', ') }}">
+              ✓ {{ n.corroboration }} สำนักรายงานตรงกัน
+            </span>
+            {% endif %}
           </div>
           <p class="text-sm font-semibold leading-snug text-slate-100 group-hover:text-sky-300">{{ n.title }}</p>
           {% if n.matched %}
