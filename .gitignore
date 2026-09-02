@@ -14,6 +14,9 @@ env/
 *.key
 *.pem
 
+# หน้าเว็บนิ่งที่ generate ขึ้นมา — GitHub Actions สร้างเองทุกรอบ ไม่ต้องเก็บใน git
+site/
+
 # ล็อกและไฟล์ชั่วคราว
 *.log
 server.log

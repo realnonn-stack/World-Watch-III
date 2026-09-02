@@ -30,6 +30,7 @@ import csv
 import gzip
 import json
 import math
+import os
 import re
 import statistics
 import sys
@@ -1118,9 +1119,13 @@ tailwind.config = {
       </span>
       <button onclick="toggleLang()" id="langBtn"
         class="rounded-lg border border-slate-700 px-2.5 py-1.5 font-semibold text-slate-300 hover:bg-slate-800">EN</button>
+      {% if static_mode %}
+      <span class="rounded-lg border border-slate-700 px-3 py-1.5 font-semibold text-slate-400">สร้างใหม่ทุก 30 นาที</span>
+      {% else %}
       <a href="?refresh=1"
         class="rounded-lg bg-sky-500 px-3 py-1.5 font-semibold text-slate-950 hover:bg-sky-400"
         data-i18n="refresh">ดึงข้อมูลใหม่</a>
+      {% endif %}
     </div>
   </div>
 
@@ -1131,7 +1136,11 @@ tailwind.config = {
       <span>📈 ราคาสินทรัพย์ <b class="text-slate-200">{{ data.stats.assets_ok }}/{{ data.stats.assets_total }}</b> ดึงสำเร็จ</span>
       <span>📰 ข่าวที่ประมวลผล <b class="text-slate-200">{{ data.stats.news_total }}</b> ชิ้น</span>
       <span>⚠️ สินทรัพย์ผิดปกติ <b class="{% if data.stats.assets_odd %}text-rose-300{% else %}text-slate-200{% endif %}">{{ data.stats.assets_odd }}</b> รายการ</span>
+      {% if static_mode %}
+      <span class="ml-auto text-slate-500">หน้านี้สร้างไว้ล่วงหน้าเมื่อ {{ data.generated_th }} · GitHub สร้างใหม่ให้ทุก 30 นาที</span>
+      {% else %}
       <span class="ml-auto text-slate-500">ประมวลผลใน {{ data.build_seconds }} วินาที · รีเฟรชอัตโนมัติทุก 10 นาที</span>
+      {% endif %}
     </div>
   </div>
 </header>
@@ -1503,15 +1512,17 @@ tailwind.config = {
         <div>
           <h3 class="text-sm font-bold text-slate-100">💱 กำลังซื้อของลูกค้าต่างชาติ (มุมอสังหาฯ)</h3>
           <p class="text-xs text-slate-400">
-            สมมติทรัพย์ราคา <b class="text-slate-200">{{ '{:,.0f}'.format(data.thailand.property_thb) }} บาท</b>
+            สมมติทรัพย์ราคา <b class="text-slate-200"><span id="propLabel">{{ '{:,.0f}'.format(data.thailand.property_thb) }}</span> บาท</b>
             ราคาไทยไม่เปลี่ยนเลย — แต่ลูกค้าต่างชาติต้องควักเงินสกุลตัวเองเท่าไหร่
           </p>
         </div>
-        <form method="get" class="flex items-center gap-2 text-xs">
-          <input type="number" name="property" value="{{ data.thailand.property_thb }}" step="500000" min="500000"
-                 class="w-36 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-slate-200">
-          <button class="rounded-lg border border-slate-700 px-3 py-1.5 font-semibold text-slate-300 hover:bg-slate-800">คำนวณใหม่</button>
-        </form>
+        <label class="flex items-center gap-2 text-xs">
+          <span class="text-slate-400">ใส่ราคาทรัพย์จริง</span>
+          <input id="propInput" type="number" value="{{ data.thailand.property_thb }}" step="500000" min="100000"
+                 oninput="recalcFX()"
+                 class="w-40 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-slate-200">
+          <span class="text-slate-500">บาท</span>
+        </label>
       </div>
 
       {% if data.thailand.fx_rows %}
@@ -1537,7 +1548,8 @@ tailwind.config = {
                 <span class="block text-[10px] text-slate-500">{{ r.who }}</span>
               </td>
               <td class="py-2.5 text-right font-mono text-xs text-slate-400">{{ '%.4f'|format(r.rate) }} บาท</td>
-              <td class="py-2.5 text-right font-mono font-bold text-slate-100">{{ '{:,.0f}'.format(r.cost_now) }} {{ r.code }}</td>
+              <td class="py-2.5 text-right font-mono font-bold text-slate-100"
+                  data-fx-code="{{ r.code }}" data-fx-rate="{{ r.rate }}">{{ '{:,.0f}'.format(r.cost_now) }} {{ r.code }}</td>
               {% for key in ['chg_20d', 'chg_63d'] %}
               <td class="py-2.5 text-right font-mono text-xs">
                 {% set v = r[key] %}
@@ -1730,7 +1742,7 @@ tailwind.config = {
     </p>
     <p class="pt-2 text-slate-600">
       อัปเดตล่าสุด {{ data.generated_th }} · ใช้เฉพาะแหล่งข้อมูลสาธารณะที่ไม่มีค่าใช้จ่าย ·
-      <a href="/api/snapshot" class="text-sky-500/70 hover:underline">ดูข้อมูลดิบเป็น JSON</a>
+      <a href="{% if static_mode %}snapshot.json{% else %}/api/snapshot{% endif %}" class="text-sky-500/70 hover:underline">ดูข้อมูลดิบเป็น JSON</a>
     </p>
   </div>
 </footer>
@@ -1738,6 +1750,26 @@ tailwind.config = {
 <script>
 // รีเฟรชอัตโนมัติทุก 10 นาที (ตรงกับอายุแคชฝั่งเซิร์ฟเวอร์ จึงไม่ยิงแหล่งข้อมูลถี่เกินจำเป็น)
 setTimeout(function () { location.reload(); }, 10 * 60 * 1000);
+
+// คำนวณกำลังซื้อลูกค้าต่างชาติใหม่ทันทีที่พิมพ์ — ทำฝั่งเบราว์เซอร์ จึงใช้ได้ทั้งบนเซิร์ฟเวอร์และหน้าเว็บนิ่ง
+//   เงินที่ลูกค้าต้องจ่าย = ราคาทรัพย์ (บาท) ÷ อัตราแลกเปลี่ยน (บาทต่อ 1 หน่วยสกุลนั้น)
+// คอลัมน์ % ไม่ต้องคำนวณใหม่ เพราะเป็นอัตราส่วนระหว่างอัตราแลกเปลี่ยน ไม่ขึ้นกับราคาทรัพย์
+function recalcFX() {
+  var input = document.getElementById("propInput");
+  if (!input) return;
+  var label = document.getElementById("propLabel");
+  var baht = parseFloat(input.value);
+  if (!isFinite(baht) || baht <= 0) {
+    if (label) label.textContent = "—";
+    return;
+  }
+  if (label) label.textContent = Math.round(baht).toLocaleString("en-US");
+  document.querySelectorAll("[data-fx-code]").forEach(function (td) {
+    var rate = parseFloat(td.dataset.fxRate);
+    if (!isFinite(rate) || rate <= 0) return;
+    td.textContent = Math.round(baht / rate).toLocaleString("en-US") + " " + td.dataset.fxCode;
+  });
+}
 
 // สลับภาษาเฉพาะป้ายกำกับหลัก (เนื้อข่าวคงภาษาต้นทางเสมอ)
 var I18N = {
@@ -1811,9 +1843,23 @@ def index():
         data = get_snapshot(force=request.args.get("refresh") == "1",
                             property_thb=_property_arg())
         return render_template_string(PAGE, data=data, level_style=LEVEL_STYLE,
-                                      title_th=APP_TITLE_TH, title_en=APP_TITLE_EN)
+                                      title_th=APP_TITLE_TH, title_en=APP_TITLE_EN,
+                                      static_mode=False)
     except Exception:                                    # noqa: BLE001
         return render_template_string(ERROR_PAGE, detail=traceback.format_exc()), 500
+
+
+def json_safe(obj):
+    """ตัดของที่ JSON แปลงไม่ได้ออก (datetime, NaN) และตัดคีย์ที่ใช้เฉพาะภายใน"""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items() if k not in ("published", "sort_key")}
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
 
 
 @app.route("/api/snapshot")
@@ -1821,25 +1867,42 @@ def api_snapshot():
     """ข้อมูลดิบทั้งหมดเป็น JSON — เอาไปต่อยอด เช่น ส่งเข้าไลน์ตอนคะแนนพุ่ง"""
     data = get_snapshot(force=request.args.get("refresh") == "1",
                         property_thb=_property_arg())
-
-    def clean(obj):
-        if isinstance(obj, dict):
-            return {k: clean(v) for k, v in obj.items() if k not in ("published", "sort_key")}
-        if isinstance(obj, list):
-            return [clean(v) for v in obj]
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-            return None
-        return obj
-
-    return jsonify(clean(data))
+    return jsonify(json_safe(data))
 
 
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "cached": _cache["data"] is not None,
                     "cache_age_sec": int(time.time() - _cache["ts"]) if _cache["ts"] else None})
+
+
+# =============================================================================
+# 11. โหมดสร้างหน้าเว็บนิ่ง (สำหรับ GitHub Pages)
+# =============================================================================
+
+def build_static(out_dir: str, property_thb: int = DEFAULT_PROPERTY_THB) -> dict:
+    """
+    เรนเดอร์หน้าเว็บเป็นไฟล์นิ่ง index.html + snapshot.json
+
+    ใช้โค้ดคำนวณและเทมเพลตชุดเดียวกับตอนรันเป็นเซิร์ฟเวอร์ทุกบรรทัด
+    ต่างแค่ซ่อนปุ่มที่ต้องพึ่งเซิร์ฟเวอร์ (ปุ่มดึงข้อมูลใหม่) เพราะหน้านิ่งกดแล้วไม่มีอะไรเกิดขึ้น
+    ส่วนเครื่องคำนวณกำลังซื้อยังใช้ได้ปกติ เพราะย้ายไปคำนวณฝั่งเบราว์เซอร์แล้ว
+    """
+    data = get_snapshot(force=True, property_thb=property_thb)
+    with app.app_context():
+        html = render_template_string(PAGE, data=data, level_style=LEVEL_STYLE,
+                                      title_th=APP_TITLE_TH, title_en=APP_TITLE_EN,
+                                      static_mode=True)
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(html)
+    with open(os.path.join(out_dir, "snapshot.json"), "w", encoding="utf-8") as fh:
+        json.dump(json_safe(data), fh, ensure_ascii=False, indent=1)
+    # .nojekyll บอก GitHub Pages ว่าไม่ต้องเอา Jekyll มายุ่งกับไฟล์ของเรา
+    with open(os.path.join(out_dir, ".nojekyll"), "w", encoding="utf-8"):
+        pass
+    return data
 
 
 if __name__ == "__main__":
@@ -1850,9 +1913,35 @@ if __name__ == "__main__":
     except Exception:                                    # noqa: BLE001
         pass
 
+    # ---- โหมดสร้างไฟล์นิ่ง:  python app.py --build <โฟลเดอร์>  ----
+    if "--build" in sys.argv:
+        pos = sys.argv.index("--build")
+        out_dir = sys.argv[pos + 1] if len(sys.argv) > pos + 1 else "site"
+        print(f"กำลังสร้างหน้าเว็บนิ่งลงโฟลเดอร์ {out_dir}/ ...")
+        snap = build_static(out_dir)
+        st = snap["stats"]
+        print(f"  แหล่งข่าว {st['feeds_ok']}/{st['feeds_total']}"
+              f" · ราคา {st['assets_ok']}/{st['assets_total']}"
+              f" · ข่าว {st['news_total']} ชิ้น"
+              f" · ความตึงเครียด {snap['tension']['score']} ({snap['tension']['label']})")
+        # ถ้าดึงอะไรไม่ได้เลย หน้าที่ได้จะว่างเปล่าไม่มีประโยชน์ — ให้ถือว่าล้มเหลว ดีกว่าเผยแพร่หน้าเปล่า
+        if st["assets_ok"] == 0 or st["feeds_ok"] == 0:
+            print("ล้มเหลว: ดึงข้อมูลไม่ได้เลยสักแหล่ง จึงไม่เผยแพร่หน้าเปล่า")
+            sys.exit(1)
+        print(f"เสร็จแล้ว → {out_dir}/index.html")
+        sys.exit(0)
+
+    # ---- โหมดเซิร์ฟเวอร์ ----
+    # บนเครื่องตัวเองผูกกับ 127.0.0.1 (คนอื่นในวงเน็ตเข้าไม่ได้)
+    # แต่ถ้าโฮสต์ตั้ง PORT ให้ (Render / Cloud Run) ต้องเปิดเป็น 0.0.0.0 ไม่งั้นเข้าไม่ถึง
+    env_port = os.environ.get("PORT")
+    host = os.environ.get("HOST", "0.0.0.0" if env_port else "127.0.0.1")
+    port = int(env_port or 5000)
+
     print("=" * 68)
     print(" World Watch — ศูนย์เฝ้าระวังสถานการณ์โลก")
-    print(" เปิดที่  http://127.0.0.1:5000")
+    print(f" เปิดที่  http://{'127.0.0.1' if host == '127.0.0.1' else host}:{port}")
     print(" โหลดครั้งแรกใช้เวลาราว 10-25 วินาที (ดึงข่าวและราคาสด)")
+    print(" สร้างหน้าเว็บนิ่งแทน:  python app.py --build site")
     print("=" * 68)
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host=host, port=port, debug=False)

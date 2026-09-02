@@ -1,0 +1,19 @@
+# Render Blueprint — แผนฟรี ไม่ต้องผูกบัตรเครดิต
+# วิธีใช้: render.com → New → Blueprint → เลือก repo นี้ → Apply
+#
+# หมายเหตุแผนฟรี: เว็บจะหลับหลังไม่มีคนเข้า 15 นาที คนแรกที่กดหลังหลับจะรอราว 1 นาที
+services:
+  - type: web
+    name: world-watch
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+
+    # --workers 1  = ใช้แคชในหน่วยความจำร่วมกันทั้งเว็บ ถ้าหลาย worker จะต่างคนต่างแคช
+    #                แล้วยิงแหล่งข้อมูลซ้ำซ้อนโดยไม่จำเป็น
+    # --threads 8  = รับผู้ใช้พร้อมกันหลายคนได้ทั้งที่มี worker เดียว
+    # --timeout 120 = เผื่อรอบแรกที่ต้องดึงข่าว 16 แหล่ง + ราคา 18 ตัว (ปกติใช้ 5-15 วินาที)
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120
+
+    # /health ตอบทันทีโดยไม่ต้องดึงข้อมูล จึงใช้เช็คว่าเว็บตื่นแล้วได้เร็ว
+    healthCheckPath: /health

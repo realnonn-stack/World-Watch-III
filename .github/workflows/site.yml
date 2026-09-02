@@ -1,0 +1,56 @@
+# สร้างหน้าเว็บใหม่จากข้อมูลสด แล้วเผยแพร่ขึ้น GitHub Pages
+# ฟรีไม่จำกัดสำหรับ repo แบบ public
+name: build-site
+
+on:
+  schedule:
+    # ทุก 30 นาที (เวลา UTC) — GitHub อาจดีเลย์บ้างในช่วงที่คนใช้เยอะ ถือว่าปกติ
+    - cron: "*/30 * * * *"
+  workflow_dispatch:        # กดสั่งเองได้จากแท็บ Actions
+  push:
+    branches: [main]
+    paths:
+      - app.py
+      - requirements.txt
+      - .github/workflows/site.yml
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# กันไม่ให้สองรอบชนกัน แต่ไม่ยกเลิกรอบที่กำลังเผยแพร่อยู่
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ติดตั้ง dependency
+        run: pip install -r requirements.txt
+
+      - name: ดึงข้อมูลสดแล้วสร้าง index.html
+        # ถ้าดึงข้อมูลไม่ได้เลยสักแหล่ง สคริปต์จะ exit 1 เอง
+        # งานนี้จะล้มเหลวและ "ไม่เผยแพร่ทับ" ของเดิม — หน้าเว็บเก่ายังอยู่ ดีกว่าขึ้นหน้าเปล่า
+        run: python app.py --build site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,7 @@
+# แอปนี้ใช้แค่ Flask กับไลบรารีมาตรฐานของ Python เท่านั้น
+# ไม่มี requests / feedparser / pandas เพื่อให้ติดตั้งเร็วและพังยาก
+flask>=3.0
+
+# ใช้เฉพาะตอนรันบนเซิร์ฟเวอร์จริง (รันบนเครื่องตัวเองไม่ต้องใช้)
+gunicorn>=21.2 ; sys_platform != "win32"
+waitress>=3.0 ; sys_platform == "win32"
