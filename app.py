@@ -161,6 +161,10 @@ FEEDS = [
      "note_th": "สื่อรัฐจีน ใช้ดูท่าทีปักกิ่งเรื่องไต้หวัน/ทะเลจีนใต้ ไม่ใช่ข้อเท็จจริงกลาง"},
 ]
 
+# เพดานคะแนนความรุนแรงของข่าวหนึ่งชิ้น/หนึ่งเหตุการณ์
+# ใช้สเกล 0-10 เพราะคนอ่านเข้าใจทันทีว่า 10 คือเต็ม ไม่ต้องเดาว่าเต็มเท่าไหร่
+MAX_SEVERITY = 10
+
 # ---- คำที่บ่งชี้การยกระดับความรุนแรง (ยิ่งคะแนนสูง ยิ่งใกล้สงครามใหญ่) ----
 ESCALATION_KEYWORDS = {
     # ระดับ 10 — สัญญาณสงครามใหญ่ของจริง
@@ -180,6 +184,22 @@ ESCALATION_KEYWORDS = {
     # ระดับ 3 — ควรรู้ไว้
     "troop buildup": 3, "arms deal": 3, "defense budget": 3, "conscription": 3,
     "reservists": 3, "nato": 3, "war": 3,
+}
+
+# รูปประโยคที่ทำให้คำสำคัญ "ดูเหมือนรุนแรง" ทั้งที่จริงไม่ใช่
+# เจอรูปนี้เมื่อไหร่ ให้ข้ามคำนั้นไปเลย (ข้ามเฉพาะคำนั้น คำอื่นในข่าวเดียวกันยังนับปกติ)
+#
+# ตัวอย่างจริงที่เคยพลาด: "Meloni government sets longevity record in Italy" ได้ 10 เต็ม
+# เพราะเนื้อข่าวเขียนว่า "the longest-serving prime minister since World War II"
+# ซึ่งเป็นการอ้างอิงประวัติศาสตร์ ไม่ใช่สัญญาณว่ากำลังจะเกิดสงคราม
+KEYWORD_FALSE_FORMS = {
+    # World War I / II = ประวัติศาสตร์  ·  World War III = สิ่งที่เราเฝ้าอยู่จริง จึงไม่ตัด
+    "world war": r"world war\s*(?:ii|i|one|two|1|2)\b",
+    # สำนวนที่ใช้คำว่า war แต่ไม่ได้หมายถึงสงคราม
+    "war": (r"\b(?:price|trade|culture|bidding|turf|flame|proxy|cold)\s+war\b"
+            r"|\bwar\s+of\s+words\b"
+            r"|\bwar\s+on\s+(?:drugs|poverty|terror|inflation|crime)\b"),
+    "declares war": r"declares war on\s+(?:drugs|poverty|terror|inflation|crime)",
 }
 
 # คำที่บ่งชี้การผ่อนคลาย — หักคะแนนออก
@@ -637,10 +657,14 @@ def score_item(item: dict) -> dict:
     matched: list[str] = []
     weight = 0
     for kw, w in ESCALATION_KEYWORDS.items():
-        if kw in blob:
-            matched.append(kw)
-            weight = max(weight, w) + (2 if weight else 0)   # คำแรกให้เต็ม คำถัดไปบวกทีละ 2
-    weight = min(weight, 14)
+        if kw not in blob:
+            continue
+        false_form = KEYWORD_FALSE_FORMS.get(kw)
+        if false_form and re.search(false_form, blob):
+            continue          # เป็นการอ้างอิงประวัติศาสตร์หรือสำนวน ไม่ใช่สัญญาณจริง
+        matched.append(kw)
+        weight = max(weight, w) + (2 if weight else 0)       # คำแรกให้เต็ม คำถัดไปบวกทีละ 2
+    weight = min(weight, MAX_SEVERITY)
 
     calming = [k for k in DEESCALATION_KEYWORDS if k in blob]
     if calming:
@@ -715,7 +739,7 @@ def cluster_events(items: list[dict]) -> list[dict]:
     for ev in events:
         ev["corroboration"] = len(ev["sources"])
         # หลายสำนักที่เป็นอิสระต่อกันรายงานตรงกัน = น่าเชื่อถือขึ้น บวกให้นิดเดียวและมีเพดาน
-        ev["eff"] = min(14, ev["weight"] + (1 if ev["corroboration"] >= 3 else 0))
+        ev["eff"] = min(MAX_SEVERITY, ev["weight"] + (1 if ev["corroboration"] >= 3 else 0))
     events.sort(key=lambda e: (-e["eff"], -e["best"]["sort_key"]))
     return events
 
@@ -756,7 +780,8 @@ def build_tension(recent_events: list[dict], assets_by_key: dict) -> dict:
     severity = max((e["eff"] for e in recent_events), default=0)
     hot_theatres = sorted({e["theatre"] for e in recent_events if e["eff"] >= 7})
     breadth = len(hot_theatres)
-    news_score = min(40.0, severity * 2.0 + breadth * 3.0)
+    # ×2.5 เพราะความรุนแรงเต็มสเกลคือ 10 (ถ้าใช้ ×2 เหมือนเดิม จะไต่ไปถึง 40 ไม่ได้เลย)
+    news_score = min(40.0, severity * 2.5 + breadth * 3.0)
 
     # ---- องค์ประกอบที่ 2: จำนวนสินทรัพย์ที่เคลื่อนไหวผิดปกติ (เต็ม 35) ----
     odd_assets = []
@@ -815,7 +840,8 @@ def build_tension(recent_events: list[dict], assets_by_key: dict) -> dict:
         "score": total, "label": label, "color": color, "advice": advice,
         "components": [
             {"name": "ข่าวยกระดับความรุนแรง (48 ชม.)", "score": round(news_score, 1), "max": 40,
-             "formula": "ความรุนแรงของเหตุการณ์ที่แรงที่สุด × 2 + จำนวนโซนที่มีเหตุระดับ 7 ขึ้นไป × 3 (เพดาน 40)",
+             "formula": ("ความรุนแรงของเหตุการณ์ที่แรงที่สุด (0–10) × 2.5"
+                         " + จำนวนโซนที่มีเหตุระดับ 7 ขึ้นไป × 3  (เพดาน 40)"),
              "detail": (f"รวมข่าวเรื่องเดียวกันแล้วเหลือ {len(recent_events)} เหตุการณ์ · "
                         f"แรงสุด {severity} · เกิดพร้อมกัน {breadth} โซน"
                         if recent_events
@@ -1361,7 +1387,11 @@ tailwind.config = {
   <section>
     <h2 class="mb-1 text-lg font-bold" data-i18n="watch">🚨 แจ้งเตือนให้จับตา</h2>
     <p class="mb-3 text-xs text-slate-400">
-      เฉพาะข่าวจากแหล่งระดับ A/B ที่จับคำสำคัญของการยกระดับความรุนแรงได้ · กดที่การ์ดเพื่อไปอ่านต้นทาง
+      เฉพาะข่าวจากแหล่งระดับ A/B ที่จับคำสำคัญของการยกระดับความรุนแรงได้ · กดที่การ์ดเพื่อไปอ่านต้นทาง ·
+      ตัวเลขในกล่องซ้ายคือ<b class="text-slate-300">ระดับความรุนแรง เต็ม 10</b>
+      (<span class="text-rose-300">8–10 รุนแรงมาก</span> ·
+      <span class="text-amber-300">6–7 ปฏิบัติการทหาร</span> ·
+      <span class="text-sky-300">5 ตึงเครียดระดับการทูต</span>)
     </p>
 
     {% if data.watchlist %}
@@ -1370,9 +1400,10 @@ tailwind.config = {
       <a href="{{ n.link }}" target="_blank" rel="noopener"
          class="card group rounded-xl border border-slate-800 bg-slate-900/50 p-3.5 hover:border-sky-600/60 transition flex gap-3">
         <div class="shrink-0 grid h-11 w-11 place-items-center rounded-lg font-mono text-sm font-bold
-          {% if n.weight >= 10 %}bg-rose-500/20 text-rose-300
-          {% elif n.weight >= 7 %}bg-amber-500/20 text-amber-300
-          {% else %}bg-sky-500/20 text-sky-300{% endif %}">{{ n.weight }}</div>
+          {% if n.weight >= 8 %}bg-rose-500/20 text-rose-300
+          {% elif n.weight >= 6 %}bg-amber-500/20 text-amber-300
+          {% else %}bg-sky-500/20 text-sky-300{% endif %}"
+          title="ระดับความรุนแรง {{ n.weight }} จาก 10">{{ n.weight }}</div>
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-1.5 text-[10px] mb-1">
             <span class="rounded border px-1.5 py-px font-semibold {{ data.tiers[n.tier].cls }}">
