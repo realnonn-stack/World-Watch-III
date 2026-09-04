@@ -450,6 +450,81 @@ def fetch_series(asset: dict) -> dict:
 
 
 # =============================================================================
+# 3.5 แปลพาดหัวข่าวเป็นไทย (คร่าว ๆ ด้วยเครื่อง — ไม่ใช่คำแปลทางการ)
+# =============================================================================
+#
+# ใช้ endpoint แปลภาษาแบบไม่เป็นทางการของ Google (ฟรี ไม่ต้องใช้ key)
+# เพราะ DeepL/Google Cloud Translation ตัวทางการต้องสมัคร API key และมีค่าใช้จ่ายเมื่อเกินโควตาฟรี
+# ความเสี่ยงที่ต้องยอมรับ: endpoint นี้ไม่เป็นทางการ วันหนึ่งอาจถูกปิดหรือจำกัดโดยไม่แจ้งล่วงหน้า
+# ถ้าแปลไม่สำเร็จ (ไม่ว่าเหตุผลใด) หน้าเว็บจะโชว์แค่ภาษาอังกฤษต้นฉบับต่อไป ไม่มีอะไรพัง
+#
+# ⚠️ คำแปลนี้เชื่อ 100% ไม่ได้ — พาดหัวข่าวทหารมีคำกำกวมที่เครื่องแปลผิดได้ง่าย
+# เช่น "shot down" แปลได้ทั้ง "ยิงตก" และ "ปฏิเสธ" จึง**คงภาษาอังกฤษต้นฉบับไว้ควบคู่เสมอ**
+# เพื่อให้ตรวจสอบย้อนกลับได้ — ห้ามเอาคำแปลไปแทนที่ต้นฉบับเด็ดขาด
+
+_translate_cache: dict[str, str | None] = {}
+_translate_lock = threading.Lock()
+
+# ⚠️ พบระหว่างทดสอบจริง: Google Translate (endpoint ฟรีตัวนี้) แปลพาดหัวข่าวหนึ่งชิ้นแล้ว
+# "หลอน" ใส่ข้อความโฆษณาเว็บพนันเข้ามาเองโดยที่ต้นฉบับไม่มีคำนี้อยู่เลย
+#   ต้นฉบับ:  "US pressure on Iran starting to tell, as sanctions and blockade bite - Reuters"
+#   ที่ได้:   "...การปิดล้อม_เว็บไซต์ทางการของ Fifa55u"   (ทดสอบซ้ำได้ผลเดิมทุกครั้ง — ไม่ใช่ปัญหาเน็ตเวิร์กชั่วคราว)
+# นี่คือปัญหาที่มีการบันทึกไว้แล้วของโมเดลแปลภาษาสาธารณะ (แปลคำ/วลีสั้นแล้วดึงข้อความขยะ
+# จากข้อมูลฝึกโมเดลออกมาปนโดยไม่เกี่ยวกับต้นฉบับ) จึงต้องกรองผลลัพธ์ก่อนนำไปแสดงบนเว็บสาธารณะ
+# กันไว้ 2 ชั้น: (1) คำต้องห้าม (2) ความยาวคำแปลต้องไม่พองผิดปกติเทียบกับต้นฉบับ
+_TRANSLATION_SPAM_PATTERNS = re.compile(
+    r"fifa\d|ufabet|pg\s?slot|sa\s?gaming|joker\s?(?:gaming|123)|เว็บพนัน|เว็บตรง|"
+    r"คาสิโนออนไลน์|บาคาร่า|สล็อตออนไลน์|แทงบอลออนไลน์|เครดิตฟรี|ฝากถอนไม่มีขั้นต่ำ|"
+    r"สมัครสมาชิกฟรี|แจกเครดิต|หวยออนไลน์",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_garbage_translation(original: str, translated: str) -> bool:
+    if _TRANSLATION_SPAM_PATTERNS.search(translated):
+        return True
+    # คำแปลไทยปกติสั้นกว่าอังกฤษเล็กน้อยถึงพอ ๆ กัน ถ้ายาวเกิน 2 เท่าของต้นฉบับ
+    # มักแปลว่ามีข้อความที่ไม่เกี่ยวกับต้นฉบับหลุดปนเข้ามา
+    if len(translated) > len(original) * 2.2 + 20:
+        return True
+    return False
+
+
+def translate_to_thai(text: str) -> str | None:
+    """แปลข้อความอังกฤษสั้น ๆ เป็นไทย คืน None ถ้าแปลไม่สำเร็จหรือผลลัพธ์ดูน่าสงสัย (จะไม่โยน exception ออกไป)"""
+    if not text or not text.strip():
+        return None
+    with _translate_lock:
+        if text in _translate_cache:
+            return _translate_cache[text]
+    try:
+        url = ("https://translate.googleapis.com/translate_a/single"
+               "?client=gtx&sl=en&tl=th&dt=t&q=" + quote(text))
+        raw = http_get(url, timeout=6)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        translated = "".join(seg[0] for seg in data[0] if seg and seg[0]).strip()
+        if translated and _looks_like_garbage_translation(text, translated):
+            translated = None
+    except Exception:                                     # noqa: BLE001 — แปลไม่ได้ก็แค่ไม่แสดง ไม่ทำให้เว็บพัง
+        translated = None
+    with _translate_lock:
+        _translate_cache[text] = translated
+    return translated
+
+
+def attach_thai_titles(items: list[dict]) -> None:
+    """เติม item['title_th'] ให้ทุกชิ้นแบบขนาน — ข่าวพาดหัวซ้ำ (ปรากฏหลายส่วนของหน้าเว็บ) แปลครั้งเดียวพอ"""
+    unique_titles = list({it["title"] for it in items if it.get("title")})
+    if not unique_titles:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        translated = list(pool.map(translate_to_thai, unique_titles))
+    lookup = dict(zip(unique_titles, translated))
+    for it in items:
+        it["title_th"] = lookup.get(it.get("title"))
+
+
+# =============================================================================
 # 4. คณิตศาสตร์ตรวจจับความผิดปกติ
 #    ทุกตัวเลขคำนวณจากราคาปิดจริง สูตรเขียนกำกับไว้ให้ตรวจย้อนได้
 # =============================================================================
@@ -1103,6 +1178,10 @@ def build_snapshot(property_thb: int = DEFAULT_PROPERTY_THB) -> dict:
     unverified.sort(key=lambda n: (-n["weight"], -n["sort_key"]))
     unverified = unverified[:12]
 
+    # แปลพาดหัวเป็นไทยเฉพาะข่าวที่ขึ้นหน้าเว็บจริง (ไม่แปลทั้ง 300+ ชิ้นที่ดึงมา ประหยัดเวลาและโควตา)
+    theatre_items = [n for th in theatres for n in th["items"]]
+    attach_thai_titles(watchlist + theatre_items + unverified)
+
     tension = build_tension(recent_events, assets_by_key)
     thailand = build_thailand(raw_series, assets_by_key, property_thb)
 
@@ -1368,7 +1447,12 @@ tailwind.config = {
               {% if n.weight >= 7 %}<span class="ml-auto rounded bg-rose-500/20 px-1 py-px font-bold text-rose-300">รุนแรง {{ n.weight }}</span>
               {% elif n.weight >= 5 %}<span class="ml-auto rounded bg-amber-500/20 px-1 py-px font-bold text-amber-300">ตึง {{ n.weight }}</span>{% endif %}
             </div>
+            {% if n.title_th %}
+            <p class="text-[12px] leading-snug text-slate-200 line-clamp-2">{{ n.title_th }}</p>
+            <p class="mt-0.5 text-[10px] leading-snug text-slate-500 line-clamp-1">{{ n.title }}</p>
+            {% else %}
             <p class="text-[12px] leading-snug text-slate-300 line-clamp-2">{{ n.title }}</p>
+            {% endif %}
           </a>
           {% else %}
           <p class="rounded-lg border border-dashed border-slate-800 p-3 text-center text-[11px] text-slate-600">
@@ -1417,7 +1501,16 @@ tailwind.config = {
             </span>
             {% endif %}
           </div>
+          {% if n.title_th %}
+          <p class="text-sm font-semibold leading-snug text-slate-100 group-hover:text-sky-300">
+            {{ n.title_th }}
+            <span class="ml-1 rounded bg-slate-800 px-1 py-px align-middle text-[9px] font-normal text-slate-500"
+                  title="แปลด้วยเครื่อง ไม่ใช่คำแปลทางการ — อ่านต้นฉบับอังกฤษด้านล่างเพื่อความชัวร์">🌐 แปล</span>
+          </p>
+          <p class="mt-0.5 text-[11px] leading-snug text-slate-500">{{ n.title }}</p>
+          {% else %}
           <p class="text-sm font-semibold leading-snug text-slate-100 group-hover:text-sky-300">{{ n.title }}</p>
+          {% endif %}
           {% if n.matched %}
           <p class="mt-1.5 text-[10px] text-slate-500">
             คำที่ทำให้ถูกยกขึ้นมา:
@@ -1777,8 +1870,14 @@ tailwind.config = {
           <span class="ml-auto rounded bg-slate-800 px-1.5 py-px font-mono text-slate-400">น้ำหนักข่าว {{ n.weight }}</span>
         </div>
 
-        <a href="{{ n.link }}" target="_blank" rel="noopener"
-           class="mt-1.5 block text-sm font-semibold leading-snug text-slate-100 hover:text-amber-300">{{ n.title }}</a>
+        <a href="{{ n.link }}" target="_blank" rel="noopener" class="mt-1.5 block hover:text-amber-300">
+          {% if n.title_th %}
+          <span class="block text-sm font-semibold leading-snug text-slate-100">{{ n.title_th }}</span>
+          <span class="mt-0.5 block text-[11px] leading-snug text-slate-500">{{ n.title }}</span>
+          {% else %}
+          <span class="block text-sm font-semibold leading-snug text-slate-100">{{ n.title }}</span>
+          {% endif %}
+        </a>
 
         <div class="mt-2 space-y-1 rounded-lg bg-slate-950/60 p-2">
           <p class="text-[10px] font-bold uppercase tracking-wider text-amber-400">ทำไมยังเชื่อไม่ได้</p>
